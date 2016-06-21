@@ -1,6 +1,6 @@
 # A Graphical User Interface for querying a genetics SQL Database using Shiny in R
-# Version: 0.7
-# Last Modified: 12/2/15
+# Version: 0.8
+# Last Modified: 5/15/16
 # 
 # The following is an implementation of a GUI using the Shiny package in Rstudio.  Shiny programs have two scripts associated with them.  This one, server.R acts as the 'brains'
 # of the code and contains all of the functions which actually compute results.  The other script, ui.R, controls the appearance of the GUI and provides inputs and displays outputs from
@@ -13,8 +13,11 @@ options(stringsAsFactors=FALSE)
 source("manhattan.R")
 if (!require("beeswarm")) install.packages("beeswarm")
 if (!require("gplots")) install.packages("gplots")
+if (!require("yaml")) install.packages("yaml")
+if (!require("d3heatmap")) install.packages("d3heatmap")
 library(beeswarm)
 library("gplots")
+library(d3heatmap)
 
 #Initialize the database reader and get a list of all relevant tables
 print("Initializing Database")
@@ -25,7 +28,7 @@ FullTables=sqlTables(dbhandle)
 #A section to define limited Tables if you want to password protect the full data.
 limitedTables=FullTables  #no password protection
 
-limitedTables=FullTables[grep("Chow",FullTables[,3]),] #limit to a subset of data
+#limitedTables=FullTables[grep("Chow",FullTables[,3]),] #limit to a subset of data
 
 allTables = limitedTables
 
@@ -183,11 +186,34 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
     selectInput("DataViz_Study", "Select Study", DV_StudyChoices ) #the select input to be placed into the UI
   })
   
+  #This function differentiates between sub-studies (for instance, male vs female mice)
+  output$DataViz_FinalTableSelectUI <-renderUI({
+    if(input$DataViz_DataType=="Clinical"){
+      DV_temp=allTables[allTables[,4]=="VIEW",]
+      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="ClinicalQTL",3]
+    }
+    if(input$DataViz_DataType=="Expression"){
+      DV_temp=allTables[allTables[,4]=="VIEW",]
+      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="expressionQTL",3]
+    }
+    if(input$DataViz_DataType=="Metabolite"){
+      DV_temp=allTables[allTables[,4]=="VIEW",]
+      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="MetaboliteQTL",3]
+    }
+    if(input$DataViz_DataType=="Protein"){
+      DV_temp=allTables[allTables[,4]=="VIEW",]
+      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="ProteinQTL",3]
+    }
+    DV_FinalTableContenders=DV_FinalTableChoices[grep(input$DataViz_Study,DV_FinalTableChoices)] 
+    
+    selectInput("DataViz_ExactView", "Select Table", DV_FinalTableContenders ) 
+  })
+  
   #After a study has been selected, this function populates the possible phenotypes to select from
   output$DataViz_PhenotypeUI <- renderUI({
     cur_table=input$DataViz_Study   #Get which study is being examined
     if(input$DataViz_DataType=="Clinical"){
-      query=paste("SELECT distinct trait_name  FROM HMDP.ClinicalTraitAnnotation.",input$DataViz_Study,"",paste="")
+      query=paste("SELECT distinct trait_name  FROM HMDP.ClinicalQTL.",input$DataViz_ExactView,"",paste="")
       DV_PhenoChoices=as.vector(sqlQuery(dbhandle, query)[[1]])
     }
     if(input$DataViz_DataType=="Expression"){ #My original idea was to do a drop-down menu for all phenotypes, including genes/probes.  This proved too taxing and instead I've implemented a simple text entry box.
@@ -212,28 +238,7 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
       selectInput("DataViz_Pheno", "Select Phenotype", DV_PhenoChoices )}
   })
   
-  #This function differentiates between sub-studies (for instance, male vs female mice)
-  output$DataViz_FinalTableSelectUI <-renderUI({
-    if(input$DataViz_DataType=="Clinical"){
-      DV_temp=allTables[allTables[,4]=="VIEW",]
-      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="ClinicalQTL",3]
-    }
-    if(input$DataViz_DataType=="Expression"){
-      DV_temp=allTables[allTables[,4]=="VIEW",]
-      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="expressionQTL",3]
-    }
-    if(input$DataViz_DataType=="Metabolite"){
-      DV_temp=allTables[allTables[,4]=="VIEW",]
-      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="MetaboliteQTL",3]
-    }
-    if(input$DataViz_DataType=="Protein"){
-      DV_temp=allTables[allTables[,4]=="VIEW",]
-      DV_FinalTableChoices=DV_temp[DV_temp[,2]=="ProteinQTL",3]
-    }
-    DV_FinalTableContenders=DV_FinalTableChoices[grep(input$DataViz_Study,DV_FinalTableChoices)] 
-    
-    selectInput("DataViz_ExactView", "Select Table", DV_FinalTableContenders ) 
-  })
+  
   
   #Finally, now that we have pinpointed the exact phenotype/study combination desired, we get the data from the server
   DV_GetData <- reactive({  #A reactive function only triggers if a variable within it changes (in this case, if the button 'DataViz_Calulate' is pressed)
@@ -242,18 +247,25 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
       isolate({  #Nothing within the isolate function 'counts' for the reactive function above.  This allows the user to modify what they are looking for without constantly telling the program to start interacting with the database
         if(input$DataViz_DataType=="Clinical"){
           Group="ClinicalQTL"
+          query <- paste("SELECT trait_name,rsID,snp_chr,snp_bp_mm10,pvalue  FROM HMDP.",Group,".",input$DataViz_ExactView," WHERE trait_name='",input$DataViz_Pheno,"'",sep="")    
+          
         }
         if(input$DataViz_DataType=="Expression"){
-          Group="expressionQTL"    
+          Group="ExpressionQTL"
+          query <- paste("SELECT probesetID,rsID,snp_chr,snp_bp_mm10,pvalue  FROM HMDP.",Group,".",input$DataViz_ExactView," WHERE probesetID='",input$DataViz_Pheno,"'",sep="")    
+          
         }
         if(input$DataViz_DataType=="Metabolite"){
           Group="MetaboliteQTL"
+          query <- paste("SELECT metabolite_name,rsID,snp_chr,snp_bp_mm10,pvalue  FROM HMDP.",Group,".",input$DataViz_ExactView," WHERE metabolite_name='",input$DataViz_Pheno,"'",sep="")    
+          
         }
         if(input$DataViz_DataType=="Protein"){
           Group="ProteinQTL"
+          query <- paste("SELECT gene_symbol,rsID,snp_chr,snp_bp_mm10,pvalue  FROM HMDP.",Group,".",input$DataViz_ExactView," WHERE gene_symbol='",input$DataViz_Pheno,"'",sep="")    
+          
         }
         #We are now going to construct the query to the SQL server.  
-        query <- paste("SELECT trait_name,rsID,snp_chr,snp_bp_mm10,pvalue  FROM HMDP.",Group,".",input$DataViz_ExactView," WHERE trait_name='",input$DataViz_Pheno,"'",sep="")    
         print("Query Constructed")
         #and here we actually run the query
         DV_Data=sqlQuery(dbhandle, query)
@@ -367,7 +379,7 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
     }
     if(input$Beeswarm_DataType=="Protein"){
       BS_temp=allTables[allTables[,4]=="VIEW",]
-      BS_FinalTableChoices=BS_temp[BS_temp[,2]=="ProteinQTL",3]
+      BS_FinalTableChoices=BS_temp[BS_temp[,2]=="ProteinAbundance",3]
     }
     # print(input$Beeswarm_Study)
     BS_FinalTableContenders=BS_FinalTableChoices[grep(input$Beeswarm_Study,BS_FinalTableChoices)] 
@@ -391,7 +403,7 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
       DV_PhenoChoices=as.vector(sqlQuery(dbhandle, query)[[1]])
     }
     if(input$Beeswarm_DataType=="Protein"){
-      query=paste("SELECT distinct gene_symbol  FROM HMDP.ProteinAnnotation.",input$Beeswarm_Study,"",paste="")    
+      query=paste("SELECT distinct gene_symbol  FROM HMDP.ProteinAbundance.",input$Beeswarm_Study,"",paste="")    
       DV_PhenoChoices=as.vector(sqlQuery(dbhandle, query)[[1]])
     }
     if(input$Beeswarm_DataType=="Expression"){
@@ -761,7 +773,7 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
       #Now that we have the exact phenotypes we care about, we can calulate the relationship of each of these SNPs to one another
       withProgress(value=.5,message="Calculating Correlations",{
         print("Calculating Correlations")  
-        cortable=corFast(t(Pheno_Data),use="pairwise.complete.obs")
+        cortable=cor(t(Pheno_Data),use="pairwise.complete.obs")
         cortable[which(is.na(cortable))]=0
         cortable2=cortable^2
         rownames(cortable2)=positions
@@ -771,8 +783,9 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
       #and finally create the output PDF, which is simply a heatmap of the correlations of each SNP to each other SNP within the window.
       print("Creating Plot")
       title=paste("LD Block Structure: Chr ",input$LD_Chr," ",input$LD_LB, " to ",input$LD_UB," Mb",sep="")
-      heatmap.2(cortable2, Rowv=FALSE,Colv=FALSE, dendrogram="none", col=heat.colors(75), scale="none",
-                key=FALSE, symkey=FALSE, density.info="none", trace="none", cexRow=0.5,cexCol=.15,main=title)  
+      d3heatmap(cortable2,Rowv=FALSE,Colv=FALSE,dendrogram="none",colors="Oranges")
+      #heatmap.2(cortable2, Rowv=FALSE,Colv=FALSE, dendrogram="none", col=heat.colors(75), scale="none",
+       #         key=FALSE, symkey=FALSE, density.info="none", trace="none", cexRow=0.5,cexCol=.15,main=title)  
       
     }
   })
@@ -782,7 +795,7 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
     if(input$LD_Calculate==0 || input$LD_window_or_rsID=="window"){return("")} else{isolate(LD_GetData_rsID())}
   })
   
-  output$LD_windowOut <- renderPlot({
+  output$LD_windowOut <- renderD3heatmap({
     if(input$LD_Calculate==0 || input$LD_window_or_rsID=="rsID"){return(NULL)} else {isolate(LD_GetData_Window())}  
   })
   
@@ -969,6 +982,7 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
   #This section examines the entirety (or a subset) of the data currently available to find significant/suggestive correlations between a phenotype of intetrest and other phenotypes, studies, tissues, etc.
   #####Find Correlations#####
   #This first function allows the user to select a subset of the entire data to look for correlations in.  Obviously, the fewer experiments, the faster it goes. 
+  
   output$FC_SelectExperimentsUI <-renderUI({
     
     selectors=allTables[allTables[,2]=="Correlations",]  #find all correlations in allTables
@@ -986,100 +1000,123 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
     selectors=names(table(selectors))
     
 
-    checkboxGroupInput("FC_Experiments", "Select Experiments to Include", selectors, selected=selectors)
+    checkboxGroupInput("FC_Experiments", "Select Experiments to Include", selectors, selected=c())
   })
+  
+  
   
   #The workhorse function which actually finds the correlations
   FC_GetResults<- reactive({
+    thingtofind=input$FC_Input
+    threshold=input$FC_threshold
     experiments=allTables[allTables[,2]=="Correlations",] #get all correlations
     experiments=experiments[experiments[,4]=="VIEW",]
     experiments=experiments[,3]
-    if(!input$FC_Include_Probes){ #we have the option to keep or remove all the eQTLs.  
-      temp=sapply(experiments,retElement,3)!="trx" #if we don't want the eQTLs, we filter them out.
-      
-      countElement <-function(x){
-        temp=strsplit(x,"_")
-        temp=length(temp[[1]])
-        return(temp)
-      }
-      t2=sapply(experiments,countElement)!=4
-      
-      temp= temp | t2
-      experiments=experiments[temp]
+    exp_Names=sapply(experiments,retElement,1)
+    exp_to_include=input$FC_Experiments
+    print(exp_to_include)
+    inds <- which(exp_Names %in% exp_to_include)
+    experiments=experiments[inds]
+    query_type=input$FC_Type
+    if(query_type=="expression"){ query_type="trx"}
+    if(query_type=="protein"){ query_type="peptide"}
+    inds=grep(query_type,experiments)
+    experiments=experiments[inds]
+    cor_types=input$FC_Cor_Types
+    cor_types[cor_types=="expression"]="trx"
+    cor_types[cor_types=="protein"]="peptide"
+    inds=c()
+    for(z in 1:length(cor_types)){
+      if(cor_types[z]==query_type){
+        temp=paste0(query_type,"_",query_type)
+      } else {temp=cor_types[z]}
+      inds=c(inds,grep(temp,experiments))
     }
-    all_experiments=experiments
+    experiments=experiments[inds]
     
-    #We now filter ALL experiments by the ones we selected above that we wish to keep
-    experiments=c()
-    for(i in 1:length(input$FC_Experiments)){
-      temp=input$FC_Experiments[i]
-      temp=paste(temp,"_",sep="")
-      temp=grep(temp,all_experiments,fixed=T)
-      temp=all_experiments[temp]
-      experiments=c(experiments,temp)
-    }
-    
-    #Trim off the 'AllInfo' part.
-    
-    for(i in 1:length(experiments)){
-      temp=strsplit(experiments[i],"_")[[1]]
-      temp=temp[-length(temp)]
-      temp=paste(temp,collapse="_")
-      experiments[i]=temp
-    }
-      
-    #Make the MASSIVE experiment filter for the eventual query
-    
-    exp_filter="(dataset='"
-    for(i in 1:(length(experiments)-1)){
-      temp=experiments[i]
-      exp_filter=paste0(exp_filter,temp,"' OR dataset='")
-    }
-    exp_filter=paste0(exp_filter,experiments[length(experiments)],"')")
-    
-   # print(exp_filter)
-    #The much smaller phenotype_filter
-    pheno_query=paste("(ProbesetID_1='",input$FC_Input,"' OR gene_symbol='",input$FC_Input,"' OR clinical_trait_1='",input$FC_Input,"' OR metabolite_1='",input$FC_Input,"' OR protein_1='",input$FC_Input,"')",sep="")
-    
-   # print(pheno_query)
-    #The tiny pvalue filter
-    pval_filter=paste0("pvalue<='",input$FC_threshold,"'")
-   # print(pval_filter)
-    #and finally we combine everything together to create our master SQL query.
-    final_query=paste0("SELECT * FROM Unified.Correlations_AllInfo WHERE ",exp_filter," AND ",pheno_query," AND ",pval_filter)
-    
-    print(final_query)
-    withProgress(value=0,message="Generating Results... this may take some time.",{ #It really might.  Working on a way to improve speed now.
-      FC_Data=sqlQuery(dbhandle, final_query) #and here we actually are getting the results
-    })
-    
-    
+    #Time to make queries and get the outputs.
     outdata=c()
-    withProgress(value=0,message="Processing Results...",{
-      #our correlations can be with all sorts of different things... a gene, a phenotype, a metabolite, a protein, etc, etc.  Our initial input can be any of those things as wel
-      #as a result, we have to figure out which entries in our unified correlation database is actually filled
-      for(i in 1:nrow(FC_Data)){ #for each row of the correlations we've downloaded
-        incProgress(1/nrow(FC_Data))
-        cur_row=FC_Data[i,] #extract that row
-        tokeep=c(2:4) #keep a few columns that are always needed (type of correlation, tissue of interest, study) and then look to see which other columns are filled
-        if(!is.na(cur_row[5])){ tokeep=c(tokeep,5,6)} #gene 1
-        if(!is.na(cur_row[11])){ tokeep=c(tokeep,11,12)} #gene 2
-        if(!is.na(cur_row[17])){ tokeep=c(tokeep,17,18)} #phenotype 1
-        if(!is.na(cur_row[20])){ tokeep=c(tokeep,20,21)} #phenotype 2
-        if(!is.na(cur_row[23])){ tokeep=c(tokeep,23,24)} #metabolite 1
-        if(!is.na(cur_row[25])){ tokeep=c(tokeep,25,26)} #metabolite 2
-        if(!is.na(cur_row[27])){ tokeep=c(tokeep,27,27)} #protein 1
-        if(!is.na(cur_row[28])){ tokeep=c(tokeep,28,28)} #protein 2
-        tokeep=c(tokeep,29,30) #and we want to keep the last two values as well (correlation score and pvalue)
-        cur_row=cur_row[tokeep] #and now we actually filter the row to the values we care about
-        names(cur_row)=c("class","tissue","study","Pheno1_ID","Pheno1_Info","Pheno2_ID","Pheno2_Info","bicor","pvalue") #add names to those values
-        outdata=rbind(outdata,cur_row) #and add it to our master output.
+    for(i in 1:length(experiments)){
+      clean_state=0
+      search_names=c()
+      filter_names=c()
+      #Basics
+      temp=strsplit(experiments[i],"_")[[1]]
+      if(length(grep("trx",temp))>0){search_names=c(search_names,"probesetID","gene_symbol")
+      clean_state=1}
+      if(length(grep("peptide",temp))>0){search_names=c(search_names,"gene_symbol")}
+      if(length(grep("clinical",temp))>0){search_names=c(search_names,"trait_name")}
+      if(length(grep("metabolite",temp))>0){search_names=c(search_names,"metabolite_name")}
+      if(length(grep("microbiota",temp))>0){search_names=c(search_names,"taxon_name")}
+      if(query_type=="trx"){filter_names=c("probesetID","gene_symbol")}
+      if(query_type=="peptide"){filter_names=c("gene_symbol")}
+      if(query_type=="clinical"){filter_names=c("trait_name")}
+      if(query_type=="metabolite"){filter_names=c("metabolite_name")}
+      #Special Cases
+      if(length(grep("trx",temp))>1){search_names=c("probesetID_1","gene_symbol","probesetID_2","gene_symbol_2")
+      filter_names=search_names
+      clean_state=2}
+      if(length(grep("peptide",temp))>1){search_names=c("gene_symbol","gene_symbol_2")
+      filter_names=search_names}
+      if(length(grep("clinical",temp))>1){search_names=c("trait_1","trait_2")
+      filter_names=search_names}
+      if(length(grep("metabolite",temp))>1){search_names=c("metabolite_1","metabolite_2")
+      filter_names=search_names}
+      if(length(grep("trx_peptide",experiments[i]))>0){
+        search_names=c("probesetID","gene_symbol","prot_gene_symbol")
+        if(query_type=="peptide"){ filter_names="prot_gene_symbol"}
       }
-    })
-    #this output is a condensed form of the SQL query which removes empty spaces and is better for visualization
+      
+      search_names=paste(search_names,collapse=",")
+      search_names=paste0(search_names,",bicor,pvalue ")
+      
+      filter_names=paste(filter_names,collapse=paste0("='",thingtofind,"' OR "))
+      filter_names=paste0(filter_names,"='",thingtofind,"'")
+      
+      
+      filter_names=paste0("(",filter_names,") AND pvalue<",threshold)
+      
+      temp_dataset=paste0("HMDP.Correlations.",experiments[i])
+      
+      query=paste0("SELECT ",search_names,"FROM ",temp_dataset," WHERE ",filter_names)
+      
+      cur_data=sqlQuery(dbhandle, query)
+      
+      #if there is something to be added...
+      if(nrow(cur_data)>0){
+      if(clean_state==1){
+        temp=cur_data[,c(1:2)]
+        temp=apply(temp,1,paste,collapse=" - ")
+        cur_data=cur_data[,-c(1:2)]
+        cur_data=cbind(temp,cur_data)
+      }
+      if(clean_state==2){
+        
+        temp=cur_data[,c(1:2)]
+        temp=apply(temp,1,paste,collapse=" - ")
+        cur_data=cur_data[,-c(1:2)]
+        cur_data=cbind(temp,cur_data)
+        
+        temp=cur_data[,c(2:3)]
+        temp=apply(temp,1,paste,collapse=" - ")
+        fcol=cur_data[,1]
+        cur_data=cur_data[,-c(1:3)]
+        cur_data=cbind(fcol,temp,cur_data)
+        
+      }
+      cur_data=cbind(experiments[i],cur_data)
+      colnames(cur_data)=c("dataset","trait_1","trait_2","bicor","pvalue")
+      outdata=rbind(outdata,cur_data)
+      }
+    }
+    
+    temp=order(outdata[,5])
+    outdata=outdata[temp,]
     outdata
     
-  })
+  })    
+
+
   
   #the output function for the data above.
   output$FC_Output <-renderDataTable({
@@ -1097,6 +1134,15 @@ shinyServer(function(input, output,session) { #basic implementation of a shinySe
       write.table(isolate(FC_GetResults()), file,row.names=F,sep="\t")
     })
 })
+
+
+
+
+
+
+
+
+
 #####EXTRAS#####
 #Takes a string x, splits it and reurns  the num-th element.
 retElement <- function(x,num){
