@@ -1,6 +1,6 @@
 # A Graphical User Interface for querying a genetics SQL Database using Shiny in R
-# Version: 0.7
-# Last Modified: 12/2/15
+# Version: 0.8
+# Last Modified: 5/15/16
 # 
 # The following is an implementation of a GUI using the Shiny package in Rstudio.  Shiny programs have two scripts associated with them.  This script, ui.R, controls the appearance of
 # The GUI and provides inputs to and displays outputs from Server.R which contains the actual functions.
@@ -42,7 +42,9 @@ shinyUI(fluidPage(
                  htmlOutput("Beeswarm_PhenotypeUI"),
                  textInput("Beeswarm_rsID","Enter your SNP of choice",value=""), #will take any string as an input
                  actionButton("Beeswarm_Calculate","Create Plot") ),
-               mainPanel(plotOutput('BS_Plot'))              
+               mainPanel(h6("Each metabolite and protein dataset is entered into the database differently.  Until these data are standardized, 
+                            functionality of the Beeswarm plots are not guaranteed! "),
+                 plotOutput('BS_Plot'))              
                )             
              ),
     tabPanel("Visualize Values Across Strains and Tissues",
@@ -78,12 +80,14 @@ shinyUI(fluidPage(
     tabPanel("Gene/Phenotype Correlations",sidebarLayout(
       sidebarPanel(
         textInput("FC_Input","Enter your gene or phenotype name"),
+        selectInput("FC_Type","What sort of data is this?",c("clinical","expression","metabolite","protein")),
+        checkboxGroupInput("FC_Cor_Types","What should we correlate against?",c("clinical","expression","metabolite","protein","microbiota")),
         htmlOutput("FC_SelectExperimentsUI"),
         numericInput("FC_threshold","P-value threshold",min=0,value=.0000042,max=1),
-        checkboxInput("FC_Include_Probes","Include Genes?",value=TRUE), #a simple checkbox for TRUE/FALSE statments.  In this case, should genes be included when calculating correlations?
         actionButton("FC_Calculate","Create Table")
       ),
-      mainPanel(dataTableOutput("FC_Output"),
+      mainPanel(h6("Don't use HighFatHypothalmusMale for now... data formated differently, will break your output.  Correlations to transripts will take some time to run.  Keep this in mind."),
+                dataTableOutput("FC_Output"),
                 downloadButton('FC_Download', 'Download These Results'))
     )),
     tabPanel("Overlapping Loci",
@@ -111,7 +115,8 @@ shinyUI(fluidPage(
                  htmlOutput("LD_MAFCutoff"),
                  actionButton("LD_Calculate","Calculate!")
                ),
-               mainPanel(textOutput("LD_rsIDOut"),plotOutput("LD_windowOut"))
+               mainPanel(h6("heatmap is now zoomable and hover-overable.  Click and drag a box around the area you want to examine.  Click without dragging to zoom out.  WARNING:  Memory intensive."),
+                         textOutput("LD_rsIDOut"),d3heatmapOutput("LD_windowOut"))
              )),
     tabPanel("Gene Name Conversions",
              sidebarLayout(
